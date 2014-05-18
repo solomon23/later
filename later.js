@@ -881,8 +881,12 @@ later = function() {
     var cur = constraint.val(d);
     return val >= cur || !val ? period.start(period.prev(d, period.val(d) - 1)) : period.start(d);
   };
+
   later.parse = {};
+
+
   later.parse.cron = function(expr, hasSeconds) {
+
     var NAMES = {
       JAN: 1,
       FEB: 2,
@@ -904,18 +908,21 @@ later = function() {
       FRI: 6,
       SAT: 7
     };
+
     var FIELDS = {
-      s: [ 0, 0, 59 ],
-      m: [ 1, 0, 59 ],
-      h: [ 2, 0, 23 ],
-      D: [ 3, 1, 31 ],
-      M: [ 4, 1, 12 ],
-      Y: [ 6, 1970, 2099 ],
-      d: [ 5, 1, 7, 1 ]
+      s: [ 0, 0, 59, null, /^([0-9]|[1-5][0-9])$/ ],
+      m: [ 1, 0, 59, null, /^([0-9]|[1-5][0-9])$/ ],
+      h: [ 2, 0, 23, null, /^([0-9]|1[0-9]|2[0-3])$/ ],
+      D: [ 3, 1, 31, null, /^(L|\?|[0-9]W?L?|[12][0-9]W?L?|3[01]W?L?|SUNW?L?|MONW?L?|TUEW?L?|WEDW?L?|THUW?L?|FRIW?L?|SATW?L?|)$/i ],
+      M: [ 4, 1, 12, null, /^([0-9]|1[0-2]|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)$/i ],
+      d: [ 5, 1, 7, 1, /^(L|\?|[1-7]L?|SUNL?|MONL?|TUEL?|WEDL?|THUL?|FRIL?|SATL?)$/ ],
+      Y: [ 6, 1970, 2099, null, /^(19[7-9][0-9]|20[0-9]{2})$/ ]
     };
+
     function getValue(value, offset) {
       return isNaN(value) ? NAMES[value] || null : +value + (offset || 0);
     }
+
     function cloneSchedule(sched) {
       var clone = {}, field;
       for (field in sched) {
@@ -925,7 +932,13 @@ later = function() {
       }
       return clone;
     }
-    function add(sched, name, min, max, inc) {
+
+    function add(sched, name, min, max, inc, validate) {
+      if ( (min !== null && min !== undefined && !('' + min).match(validate))
+        || (max !== null && max !== undefined && !(''+ max).match(validate)) ){
+        throw new Error("Field " + name + " has invalid value(s) " + min + " " + max);
+      }
+
       if (!sched[name]) {
         sched[name] = [];
       }
@@ -947,7 +960,22 @@ later = function() {
         loopTo(min, max);
       }
     }
-    function addHash(schedules, curSched, value, hash) {
+
+    function addHash(name, schedules, curSched, value, hash, validate) {
+      hashVal = +hash;
+
+      if ( isNaN(hashVal) ){
+        throw new Error("Field " + name + " has invalid hash " + hash);
+      }
+
+      if ( hashVal < 0 || hashVal > 5 ){
+        throw new Error("Field " + name + " has invalid hash " + hash);
+      }
+
+      if ( value !== undefined && !(value + '').match(validate)){
+        throw new Error("Field " + name + " has invalid value " + value);
+      }
+
       if (curSched.d && !curSched.dc || curSched.dc && curSched.dc.indexOf(hash) < 0) {
         schedules.push(cloneSchedule(curSched));
         curSched = schedules[schedules.length - 1];
@@ -955,7 +983,12 @@ later = function() {
       add(curSched, "d", value, value);
       add(curSched, "dc", hash, hash);
     }
-    function addWeekday(s, curSched, value) {
+
+    function addWeekday(name, s, curSched, value, validate) {
+      if ( !(value + '').match(validate) ){
+        throw new Error("Field " + name + " has invalid value " + value);
+      }
+
       var except1 = {}, except2 = {};
       if (value === 1) {
         add(curSched, "D", 1, 3);
@@ -975,39 +1008,58 @@ later = function() {
       s.exceptions.push(except1);
       s.exceptions.push(except2);
     }
-    function addRange(item, curSched, name, min, max, offset) {
-      var incSplit = item.split("/"), inc = +incSplit[1], range = incSplit[0];
+
+    function addRange(item, curSched, name, min, max, offset, validate) {
+      var inc, incSplit = item.split("/"), incVal = incSplit[1], range = incSplit[0];
+
+      if (incVal !== undefined){
+        inc = +incVal;
+        if ( isNaN(inc) ){
+          throw Error("Field " + name + " has invalid increment " + incVal);
+        }
+      }
+
       if (range !== "*" && range !== "0") {
         var rangeSplit = range.split("-");
+
+        if (!rangeSplit[0].match(validate) ||
+          (rangeSplit[1] !== undefined && !rangeSplit[1].match(validate))){
+          throw Error("Field " + name + " has invalid format " + item);
+        }
+
         min = getValue(rangeSplit[0], offset);
         max = getValue(rangeSplit[1], offset) || max;
       }
       add(curSched, name, min, max, inc);
     }
-    function parse(item, s, name, min, max, offset) {
+
+    function parse(item, s, name, min, max, offset, validate) {
       var value, split, schedules = s.schedules, curSched = schedules[schedules.length - 1];
       if (item === "L") {
         item = min - 1;
       }
       if ((value = getValue(item, offset)) !== null) {
-        add(curSched, name, value, value);
+        add(curSched, name, value, value, undefined, validate);
       } else if ((value = getValue(item.replace("W", ""), offset)) !== null) {
-        addWeekday(s, curSched, value);
+        addWeekday(name, s, curSched, value, validate);
       } else if ((value = getValue(item.replace("L", ""), offset)) !== null) {
-        addHash(schedules, curSched, value, min - 1);
+        addHash(name, schedules, curSched, value, min - 1, validate);
       } else if ((split = item.split("#")).length === 2) {
         value = getValue(split[0], offset);
-        addHash(schedules, curSched, value, getValue(split[1]));
+        addHash(name, schedules, curSched, value, getValue(split[1]), validate);
       } else {
-        addRange(item, curSched, name, min, max, offset);
+        addRange(item, curSched, name, min, max, offset, validate);
       }
     }
+
     function isHash(item) {
       return item.indexOf("#") > -1 || item.indexOf("L") > 0;
     }
+
     function itemSorter(a, b) {
       return isHash(a) && !isHash(b) ? 1 : 0;
     }
+
     function parseExpr(expr) {
       if (expr === "* * * * * *") {
         expr = "0/1 * * * * *";
@@ -1023,497 +1075,16 @@ later = function() {
           items = component.split(",").sort(itemSorter);
           var i, length = items.length;
           for (i = 0; i < length; i++) {
-            parse(items[i], schedule, field, f[1], f[2], f[3]);
+            parse(items[i], schedule, field, f[1], f[2], f[3], f[4]);
           }
         }
       }
       return schedule;
     }
+
     var e = expr.toUpperCase();
     return parseExpr(hasSeconds ? e : "0 " + e);
   };
-  later.parse.recur = function() {
-    var schedules = [], exceptions = [], cur, curArr = schedules, curName, values, every, modifier, applyMin, applyMax, i, last;
-    function add(name, min, max) {
-      name = modifier ? name + "_" + modifier : name;
-      if (!cur) {
-        curArr.push({});
-        cur = curArr[0];
-      }
-      if (!cur[name]) {
-        cur[name] = [];
-      }
-      curName = cur[name];
-      if (every) {
-        values = [];
-        for (i = min; i <= max; i += every) {
-          values.push(i);
-        }
-        last = {
-          n: name,
-          x: every,
-          c: curName.length,
-          m: max
-        };
-      }
-      values = applyMin ? [ min ] : applyMax ? [ max ] : values;
-      var length = values.length;
-      for (i = 0; i < length; i += 1) {
-        var val = values[i];
-        if (curName.indexOf(val) < 0) {
-          curName.push(val);
-        }
-      }
-      values = every = modifier = applyMin = applyMax = 0;
-    }
-    return {
-      schedules: schedules,
-      exceptions: exceptions,
-      on: function() {
-        values = arguments[0] instanceof Array ? arguments[0] : arguments;
-        return this;
-      },
-      every: function(x) {
-        every = x || 1;
-        return this;
-      },
-      after: function(x) {
-        modifier = "a";
-        values = [ x ];
-        return this;
-      },
-      before: function(x) {
-        modifier = "b";
-        values = [ x ];
-        return this;
-      },
-      first: function() {
-        applyMin = 1;
-        return this;
-      },
-      last: function() {
-        applyMax = 1;
-        return this;
-      },
-      time: function() {
-        for (var i = 0, len = values.length; i < len; i++) {
-          var split = values[i].split(":");
-          if (split.length < 3) split.push(0);
-          values[i] = +split[0] * 3600 + +split[1] * 60 + +split[2];
-        }
-        add("t");
-        return this;
-      },
-      second: function() {
-        add("s", 0, 59);
-        return this;
-      },
-      minute: function() {
-        add("m", 0, 59);
-        return this;
-      },
-      hour: function() {
-        add("h", 0, 23);
-        return this;
-      },
-      dayOfMonth: function() {
-        add("D", 1, applyMax ? 0 : 31);
-        return this;
-      },
-      dayOfWeek: function() {
-        add("d", 1, 7);
-        return this;
-      },
-      onWeekend: function() {
-        values = [ 1, 7 ];
-        return this.dayOfWeek();
-      },
-      onWeekday: function() {
-        values = [ 2, 3, 4, 5, 6 ];
-        return this.dayOfWeek();
-      },
-      dayOfWeekCount: function() {
-        add("dc", 1, applyMax ? 0 : 5);
-        return this;
-      },
-      dayOfYear: function() {
-        add("dy", 1, applyMax ? 0 : 366);
-        return this;
-      },
-      weekOfMonth: function() {
-        add("wm", 1, applyMax ? 0 : 5);
-        return this;
-      },
-      weekOfYear: function() {
-        add("wy", 1, applyMax ? 0 : 53);
-        return this;
-      },
-      month: function() {
-        add("M", 1, 12);
-        return this;
-      },
-      year: function() {
-        add("Y", 1970, 2450);
-        return this;
-      },
-      fullDate: function() {
-        for (var i = 0, len = values.length; i < len; i++) {
-          values[i] = values[i].getTime();
-        }
-        add("fd");
-        return this;
-      },
-      customModifier: function(id, vals) {
-        var custom = later.modifier[id];
-        if (!custom) throw new Error("Custom modifier " + id + " not recognized!");
-        modifier = id;
-        values = arguments[1] instanceof Array ? arguments[1] : [ arguments[1] ];
-        return this;
-      },
-      customPeriod: function(id) {
-        var custom = later[id];
-        if (!custom) throw new Error("Custom time period " + id + " not recognized!");
-        add(id, custom.extent(new Date())[0], custom.extent(new Date())[1]);
-        return this;
-      },
-      startingOn: function(start) {
-        return this.between(start, last.m);
-      },
-      between: function(start, end) {
-        cur[last.n] = cur[last.n].splice(0, last.c);
-        every = last.x;
-        add(last.n, start, end);
-        return this;
-      },
-      and: function() {
-        cur = curArr[curArr.push({}) - 1];
-        return this;
-      },
-      except: function() {
-        curArr = exceptions;
-        cur = null;
-        return this;
-      }
-    };
-  };
-  later.parse.text = function(str) {
-    var recur = later.parse.recur, pos = 0, input = "", error;
-    var TOKENTYPES = {
-      eof: /^$/,
-      rank: /^((\d\d\d\d)|([2-5]?1(st)?|[2-5]?2(nd)?|[2-5]?3(rd)?|(0|[1-5]?[4-9]|[1-5]0|1[1-3])(th)?))\b/,
-      time: /^((([0]?[1-9]|1[0-2]):[0-5]\d(\s)?(am|pm))|(([0]?\d|1\d|2[0-3]):[0-5]\d))\b/,
-      dayName: /^((sun|mon|tue(s)?|wed(nes)?|thu(r(s)?)?|fri|sat(ur)?)(day)?)\b/,
-      monthName: /^(jan(uary)?|feb(ruary)?|ma((r(ch)?)?|y)|apr(il)?|ju(ly|ne)|aug(ust)?|oct(ober)?|(sept|nov|dec)(ember)?)\b/,
-      yearIndex: /^(\d\d\d\d)\b/,
-      every: /^every\b/,
-      after: /^after\b/,
-      before: /^before\b/,
-      second: /^(s|sec(ond)?(s)?)\b/,
-      minute: /^(m|min(ute)?(s)?)\b/,
-      hour: /^(h|hour(s)?)\b/,
-      day: /^(day(s)?( of the month)?)\b/,
-      dayInstance: /^day instance\b/,
-      dayOfWeek: /^day(s)? of the week\b/,
-      dayOfYear: /^day(s)? of the year\b/,
-      weekOfYear: /^week(s)?( of the year)?\b/,
-      weekOfMonth: /^week(s)? of the month\b/,
-      weekday: /^weekday\b/,
-      weekend: /^weekend\b/,
-      month: /^month(s)?\b/,
-      year: /^year(s)?\b/,
-      between: /^between (the)?\b/,
-      start: /^(start(ing)? (at|on( the)?)?)\b/,
-      at: /^(at|@)\b/,
-      and: /^(,|and\b)/,
-      except: /^(except\b)/,
-      also: /(also)\b/,
-      first: /^(first)\b/,
-      last: /^last\b/,
-      "in": /^in\b/,
-      of: /^of\b/,
-      onthe: /^on the\b/,
-      on: /^on\b/,
-      through: /(-|^(to|through)\b)/
-    };
-    var NAMES = {
-      jan: 1,
-      feb: 2,
-      mar: 3,
-      apr: 4,
-      may: 5,
-      jun: 6,
-      jul: 7,
-      aug: 8,
-      sep: 9,
-      oct: 10,
-      nov: 11,
-      dec: 12,
-      sun: 1,
-      mon: 2,
-      tue: 3,
-      wed: 4,
-      thu: 5,
-      fri: 6,
-      sat: 7,
-      "1st": 1,
-      fir: 1,
-      "2nd": 2,
-      sec: 2,
-      "3rd": 3,
-      thi: 3,
-      "4th": 4,
-      "for": 4
-    };
-    function t(start, end, text, type) {
-      return {
-        startPos: start,
-        endPos: end,
-        text: text,
-        type: type
-      };
-    }
-    function peek(expected) {
-      var scanTokens = expected instanceof Array ? expected : [ expected ], whiteSpace = /\s+/, token, curInput, m, scanToken, start, len;
-      scanTokens.push(whiteSpace);
-      start = pos;
-      while (!token || token.type === whiteSpace) {
-        len = -1;
-        curInput = input.substring(start);
-        token = t(start, start, input.split(whiteSpace)[0]);
-        var i, length = scanTokens.length;
-        for (i = 0; i < length; i++) {
-          scanToken = scanTokens[i];
-          m = scanToken.exec(curInput);
-          if (m && m.index === 0 && m[0].length > len) {
-            len = m[0].length;
-            token = t(start, start + len, curInput.substring(0, len), scanToken);
-          }
-        }
-        if (token.type === whiteSpace) {
-          start = token.endPos;
-        }
-      }
-      return token;
-    }
-    function scan(expectedToken) {
-      var token = peek(expectedToken);
-      pos = token.endPos;
-      return token;
-    }
-    function parseThroughExpr(tokenType) {
-      var start = +parseTokenValue(tokenType), end = checkAndParse(TOKENTYPES.through) ? +parseTokenValue(tokenType) : start, nums = [];
-      for (var i = start; i <= end; i++) {
-        nums.push(i);
-      }
-      return nums;
-    }
-    function parseRanges(tokenType) {
-      var nums = parseThroughExpr(tokenType);
-      while (checkAndParse(TOKENTYPES.and)) {
-        nums = nums.concat(parseThroughExpr(tokenType));
-      }
-      return nums;
-    }
-    function parseEvery(r) {
-      var num, period, start, end;
-      if (checkAndParse(TOKENTYPES.weekend)) {
-        r.on(NAMES.sun, NAMES.sat).dayOfWeek();
-      } else if (checkAndParse(TOKENTYPES.weekday)) {
-        r.on(NAMES.mon, NAMES.tue, NAMES.wed, NAMES.thu, NAMES.fri).dayOfWeek();
-      } else {
-        num = parseTokenValue(TOKENTYPES.rank);
-        r.every(num);
-        period = parseTimePeriod(r);
-        if (checkAndParse(TOKENTYPES.start)) {
-          num = parseTokenValue(TOKENTYPES.rank);
-          r.startingOn(num);
-          parseToken(period.type);
-        } else if (checkAndParse(TOKENTYPES.between)) {
-          start = parseTokenValue(TOKENTYPES.rank);
-          if (checkAndParse(TOKENTYPES.and)) {
-            end = parseTokenValue(TOKENTYPES.rank);
-            r.between(start, end);
-          }
-        }
-      }
-    }
-    function parseOnThe(r) {
-      if (checkAndParse(TOKENTYPES.first)) {
-        r.first();
-      } else if (checkAndParse(TOKENTYPES.last)) {
-        r.last();
-      } else {
-        r.on(parseRanges(TOKENTYPES.rank));
-      }
-      parseTimePeriod(r);
-    }
-    function parseScheduleExpr(str) {
-      pos = 0;
-      input = str;
-      error = -1;
-      var r = recur();
-      while (pos < input.length && error < 0) {
-        var token = parseToken([ TOKENTYPES.every, TOKENTYPES.after, TOKENTYPES.before, TOKENTYPES.onthe, TOKENTYPES.on, TOKENTYPES.of, TOKENTYPES["in"], TOKENTYPES.at, TOKENTYPES.and, TOKENTYPES.except, TOKENTYPES.also ]);
-        switch (token.type) {
-         case TOKENTYPES.every:
-          parseEvery(r);
-          break;
 
-         case TOKENTYPES.after:
-          if (peek(TOKENTYPES.time).type !== undefined) {
-            r.after(parseTokenValue(TOKENTYPES.time));
-            r.time();
-          } else {
-            r.after(parseTokenValue(TOKENTYPES.rank));
-            parseTimePeriod(r);
-          }
-          break;
-
-         case TOKENTYPES.before:
-          if (peek(TOKENTYPES.time).type !== undefined) {
-            r.before(parseTokenValue(TOKENTYPES.time));
-            r.time();
-          } else {
-            r.before(parseTokenValue(TOKENTYPES.rank));
-            parseTimePeriod(r);
-          }
-          break;
-
-         case TOKENTYPES.onthe:
-          parseOnThe(r);
-          break;
-
-         case TOKENTYPES.on:
-          r.on(parseRanges(TOKENTYPES.dayName)).dayOfWeek();
-          break;
-
-         case TOKENTYPES.of:
-          r.on(parseRanges(TOKENTYPES.monthName)).month();
-          break;
-
-         case TOKENTYPES["in"]:
-          r.on(parseRanges(TOKENTYPES.yearIndex)).year();
-          break;
-
-         case TOKENTYPES.at:
-          r.on(parseTokenValue(TOKENTYPES.time)).time();
-          while (checkAndParse(TOKENTYPES.and)) {
-            r.on(parseTokenValue(TOKENTYPES.time)).time();
-          }
-          break;
-
-         case TOKENTYPES.and:
-          break;
-
-         case TOKENTYPES.also:
-          r.and();
-          break;
-
-         case TOKENTYPES.except:
-          r.except();
-          break;
-
-         default:
-          error = pos;
-        }
-      }
-      return {
-        schedules: r.schedules,
-        exceptions: r.exceptions,
-        error: error
-      };
-    }
-    function parseTimePeriod(r) {
-      var timePeriod = parseToken([ TOKENTYPES.second, TOKENTYPES.minute, TOKENTYPES.hour, TOKENTYPES.dayOfYear, TOKENTYPES.dayOfWeek, TOKENTYPES.dayInstance, TOKENTYPES.day, TOKENTYPES.month, TOKENTYPES.year, TOKENTYPES.weekOfMonth, TOKENTYPES.weekOfYear ]);
-      switch (timePeriod.type) {
-       case TOKENTYPES.second:
-        r.second();
-        break;
-
-       case TOKENTYPES.minute:
-        r.minute();
-        break;
-
-       case TOKENTYPES.hour:
-        r.hour();
-        break;
-
-       case TOKENTYPES.dayOfYear:
-        r.dayOfYear();
-        break;
-
-       case TOKENTYPES.dayOfWeek:
-        r.dayOfWeek();
-        break;
-
-       case TOKENTYPES.dayInstance:
-        r.dayOfWeekCount();
-        break;
-
-       case TOKENTYPES.day:
-        r.dayOfMonth();
-        break;
-
-       case TOKENTYPES.weekOfMonth:
-        r.weekOfMonth();
-        break;
-
-       case TOKENTYPES.weekOfYear:
-        r.weekOfYear();
-        break;
-
-       case TOKENTYPES.month:
-        r.month();
-        break;
-
-       case TOKENTYPES.year:
-        r.year();
-        break;
-
-       default:
-        error = pos;
-      }
-      return timePeriod;
-    }
-    function checkAndParse(tokenType) {
-      var found = peek(tokenType).type === tokenType;
-      if (found) {
-        scan(tokenType);
-      }
-      return found;
-    }
-    function parseToken(tokenType) {
-      var t = scan(tokenType);
-      if (t.type) {
-        t.text = convertString(t.text, tokenType);
-      } else {
-        error = pos;
-      }
-      return t;
-    }
-    function parseTokenValue(tokenType) {
-      return parseToken(tokenType).text;
-    }
-    function convertString(str, tokenType) {
-      var output = str;
-      switch (tokenType) {
-       case TOKENTYPES.time:
-        var parts = str.split(/(:|am|pm)/), hour = parts[3] === "pm" && parts[0] < 12 ? parseInt(parts[0], 10) + 12 : parts[0], min = parts[2].trim();
-        output = (hour.length === 1 ? "0" : "") + hour + ":" + min;
-        break;
-
-       case TOKENTYPES.rank:
-        output = parseInt(/^\d+/.exec(str)[0], 10);
-        break;
-
-       case TOKENTYPES.monthName:
-       case TOKENTYPES.dayName:
-        output = NAMES[str.substring(0, 3)];
-        break;
-      }
-      return output;
-    }
-    return parseScheduleExpr(str.toLowerCase());
-  };
   return later;
 }();
